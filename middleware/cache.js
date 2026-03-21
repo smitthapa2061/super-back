@@ -1,18 +1,26 @@
 const { Redis } = require('@upstash/redis');
 
-// Create Redis client
+// Warn if missing (use memory fallback)
+if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+  console.warn('⚠️  Missing Redis env vars - using memory cache only');
+  module.exports = { getCache: () => null, setCache: () => {}, cacheMiddleware: () => (req, res, next) => next(), invalidateCacheMiddleware: () => (req, res, next) => next() };
+  return;
+}
+
+// Create Redis client with new hosted creds
 const redisClient = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || "https://enabled-mako-38693.upstash.io",
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || "AZclAAIncDIwYzAxYTkyMmRlNDU0YjU5OWZjNGU5ZWQ2MDMzZTVkYnAyMzg2OTM",
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
-// Test connection
+// Test connection on startup
 (async () => {
   try {
     await redisClient.ping();
-    console.log("✅ Upstash Redis connected");
+    console.log("✅ Upstash Redis connected (new hosted instance)");
   } catch (err) {
     console.error("❌ Upstash Redis connection failed:", err.message);
+    process.exit(1);
   }
 })();
 
@@ -22,16 +30,16 @@ const memoryCache = new Map();
 const getCache = async (key) => {
   try {
     const value = await redisClient.get(key);
-    return value ?? null; // Upstash already returns parsed objects
+    return value ?? null;
   } catch (error) {
-    console.warn('Cache get error:', error.message);
+    console.warn('Cache get error, using memory:', error.message);
     return memoryCache.get(key) || null;
   }
 };
 
 const setCache = async (key, value, ttlSeconds = 300) => {
   try {
-    await redisClient.set(key, value, { ex: ttlSeconds }); // Upstash handles JSON serialization
+    await redisClient.set(key, value, { ex: ttlSeconds });
   } catch (error) {
     console.warn('Cache set error:', error.message);
     memoryCache.set(key, value);
@@ -48,29 +56,26 @@ const deleteCache = async (key) => {
   }
 };
 
-// Middleware for caching GET responses
+// Middleware
 const cacheMiddleware = (ttlSeconds = 300) => {
   return async (req, res, next) => {
-    if (req.method !== 'GET') {
-      return next();
-    }
+    if (req.method !== 'GET') return next();
 
     const key = `cache:${req.originalUrl}`;
 
     try {
       const cached = await getCache(key);
       if (cached) {
-        console.log(`Cache hit for ${key}`);
+        console.log(`✅ Cache hit: ${key}`);
         return res.json(cached);
       }
     } catch (error) {
-      console.warn('Cache middleware error:', error.message);
+      console.warn('Cache middleware get error:', error.message);
     }
 
-    // Override res.json to cache the response
     const originalJson = res.json;
     res.json = function(data) {
-      setCache(key, data, ttlSeconds).catch(err => console.warn('Cache set error:', err.message));
+      setCache(key, data, ttlSeconds).catch(console.warn);
       originalJson.call(this, data);
     };
 
@@ -81,7 +86,6 @@ const cacheMiddleware = (ttlSeconds = 300) => {
 const invalidateCacheMiddleware = (keysOrFunc) => {
   return async (req, res, next) => {
     if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
-      // Invalidate caches before the operation
       const keys = typeof keysOrFunc === 'function' ? keysOrFunc(req) : keysOrFunc;
       for (const key of keys) {
         await deleteCache(key);
@@ -91,4 +95,4 @@ const invalidateCacheMiddleware = (keysOrFunc) => {
   };
 };
 
-module.exports = { getCache, setCache, cacheMiddleware, invalidateCacheMiddleware };
+module.exports = { getCache, setCache, deleteCache, cacheMiddleware, invalidateCacheMiddleware };

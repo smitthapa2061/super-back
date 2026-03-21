@@ -6,6 +6,10 @@ const roundSchema = new mongoose.Schema({
   apiEnable: { type: Boolean, default: false },
   day: { type: String },
   groups: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Group' }], // array of group ObjectIds
+  selectedMatch: {
+    matchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Match' },
+    // add other fields if needed
+  },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true } // <-- user who created this round
 }, { timestamps: true });
 

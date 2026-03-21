@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+require('dotenv').config({ path: './.env' });
+
+const dns = require("dns");
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
+
+
 
 
 
@@ -23,11 +29,12 @@ const matchRoutes = require('./route/match.route.js');
 const matchDataRoutes = require('./route/matchData.route.js');
 const matchSelectionRoutes = require('./route/matchSelection.route.js');
 const overallRoutes = require('./route/overall.route.js');
+const lowerRoute = require('./graphicsRoute/lower.route.js');
+const liveDataRoute = require('./graphicsRoute/liveData.route.js');
+const overallRoute = require('./graphicsRoute/overallData.route.js');
 const userRoutes = require('./route/User.route.js');
-const bgPackRoutes = require('./route/bgPackRoute.js');
-const { startLiveMatchUpdater } = require('./controller/Api_controllers/pubgApiMatchData.controller.js');
-const { startCircleInfoUpdater } = require('./controller/Api_controllers/circleInfo.controller.js');
-const { startBackpackUpdater } = require('./controller/Api_controllers/bagpackInfocontroller.js');
+
+
 const { cacheMiddleware } = require('./middleware/cache.js');
 
 // --- DECLARE APP AND PORT ---
@@ -67,8 +74,21 @@ mongoose.connect(config.MONGODB_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true
 })
-  .then(() => console.log('✅ MongoDB connected'))
+  .then(() => console.log('✅ MongoDB connected (new hosted)'))
   .catch(err => console.error('❌ MongoDB connection error:', err));
+
+// --- CONNECT TO REDIS ---
+const { Redis } = require('@upstash/redis');
+const redisClient = new Redis({
+  url: config.UPSTASH_REDIS_REST_URL,
+  token: config.UPSTASH_REDIS_REST_TOKEN
+});
+
+redisClient.ping().then(() => {
+  console.log('✅ Redis connected (new hosted Upstash)');
+}).catch(err => {
+  console.error('❌ Redis connection error:', err.message);
+});
 
 // --- MIDDLEWARES ---
 // CORS must come first
@@ -175,13 +195,13 @@ const sessionMiddleware = session({
   store: sessionStore,
   proxy: true, // Trust the reverse proxy (important for HTTPS)
   cookie: {
-    secure: true, // Only secure in true production, not local IP
-    httpOnly: true,
-    sameSite: 'none', // 'none' only for true production
+    secure: false, // Only secure in true production, not local IP
+    httpOnly: false,
+    sameSite: 'lax', // 'none' only for true production
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     domain: undefined, // Don't set domain for cross-site cookies between different TLDs
     path: '/',
-    partitioned: true // Only partitioned in true production
+    partitioned: false // Only partitioned in true production
   },
   rolling: true // Reset the expiration on every request
 });
@@ -241,7 +261,9 @@ app.use('/api', teamRoutes);
 app.use('/api', matchDataRoutes);
 app.use('/api/matchSelection', matchSelectionRoutes);
 app.use('/api', overallRoutes);
-app.use('/api/bagPack', bgPackRoutes);
+app.use('/api/lowerData', lowerRoute);
+app.use('/api/liveData', liveDataRoute);
+app.use('/api/overallData', overallRoute);
 
 // --- PUBLIC ROUTES (No Authentication Required) ---
 const Tournament = require('./models/tournament.model');
@@ -603,31 +625,12 @@ io.on('connection', (socket) => {
     socket.emit('message', `Server received: ${msg}`);
   });
 
-  // Emit circle info immediately when client connects
-  const emitCircleInfoToClient = async () => {
-    try {
-      const axios = require('axios');
-      const PUBG_API_URL = process.env.PUBG_API_URL || 'http://localhost:10086';
-      const circleRes = await axios.get(`${PUBG_API_URL}/getcircleinfo`, { timeout: 5000 });
-      const circleInfo = circleRes.data.circleInfo || circleRes.data;
-      socket.emit('circleInfoUpdate', circleInfo);
-    } catch (err) {
-      console.warn(`Could not fetch circle info for client ${socket.id}:`, err.code);
-    }
-  };
-
-  emitCircleInfoToClient();
-
-  socket.on('disconnect', () => {
-    console.log('WebSocket client disconnected:', socket.id);
-  });
+  
 });
 
 // --- START SERVER ---
 server.listen(port, () => {
   console.log(`🚀 Server running at http://localhost:${port}`);
-  startLiveMatchUpdater();
-  startCircleInfoUpdater();
-  startBackpackUpdater();
+ 
 });
 
