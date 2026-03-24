@@ -142,7 +142,7 @@ const getOverallSlimData = async (req, res) => {
     // ── Emit over socket as binary ──────────────────────────
     try {
       const io = getSocket();
-      io.emit('overallSlimUpdate', encodedPayload);
+io.emit('overallDataUpdate', encodedPayload);
     } catch (err) {
       console.warn('Socket emit failed:', err.message);
     }

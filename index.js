@@ -195,13 +195,13 @@ const sessionMiddleware = session({
   store: sessionStore,
   proxy: true, // Trust the reverse proxy (important for HTTPS)
   cookie: {
-    secure: true, // Only secure in true production, not local IP
-    httpOnly: true,
-    sameSite: 'none', // 'none' only for true production
+    secure: false, // Only secure in true production, not local IP
+    httpOnly: false,
+    sameSite: 'lax', // 'none' only for true production
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     domain: undefined, // Don't set domain for cross-site cookies between different TLDs
     path: '/',
-    partitioned: true // Only partitioned in true production
+    partitioned: false // Only partitioned in true production
   },
   rolling: true // Reset the expiration on every request
 });
@@ -422,6 +422,25 @@ app.get('/api/public/bagPack/tournament/:tournamentId/round/:roundId/match/:matc
   } catch (error) {
     console.error('Error getting public backpack data:', error);
     res.status(500).json({ error: 'Failed to get public backpack data' });
+  }
+});
+
+// Public groups in a tournament
+app.get('/api/public/tournaments/:tournamentId/groups', cacheMiddleware(), async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const Group = require('./models/group.model.js');
+
+    const { tournamentId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(tournamentId)) {
+      return res.status(400).json({ error: 'Invalid tournamentId' });
+    }
+
+    const groups = await Group.find({ tournamentId }).populate('slots.team');
+    res.json(groups);
+  } catch (err) {
+    console.error('Public groups error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

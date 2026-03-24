@@ -134,7 +134,7 @@ const getLiveSlimData = async (req, res) => {
     // ✅ Emit binary via socket
     try {
       const io = getSocket();
-      io.emit('liveSlimUpdate', encodedPayload);
+io.emit('liveMatchUpdate', encodedPayload);
     } catch (socketError) {
       console.warn('Socket emit failed:', socketError.message);
     }
