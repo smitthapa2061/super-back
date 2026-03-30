@@ -9,9 +9,37 @@ const updateTeamsWithApiPlayers = require('./playerCheckandSwitch');
 const { getSocket } = require('../../socket');
 const { computeOverallMatchDataForRound } = require('../overall.controller');
 
-// ─── MD5 Hash Comparison (replaces _.isEqual) ─────────────────────────────────
+// ─── MD5 Hash Comparison ──────────────────────────────────────────────────────
 const quickHash = (obj) =>
   crypto.createHash('md5').update(JSON.stringify(obj)).digest('hex');
+
+// ─── In-Memory Live Match Cache ───────────────────────────────────────────────
+const liveMatchCache = new Map();
+
+// ─── Background Save Queue ────────────────────────────────────────────────────
+const saveQueue = [];
+let isSaving = false;
+
+// ─── Background Save Worker ───────────────────────────────────────────────────
+async function processSaveQueue() {
+  if (isSaving) return;
+  isSaving = true;
+
+  while (saveQueue.length > 0) {
+    const job = saveQueue.shift();
+    try {
+      await MatchData.updateOne(
+        { matchId: job.matchId, userId: job.userId },
+        { $set: { teams: job.teams } }
+      );
+      console.log(c('green', `💾 Saved in background → ${job.matchId}`));
+    } catch (err) {
+      console.error('Background save error:', err.message);
+    }
+  }
+
+  isSaving = false;
+}
 
 // ─── One-time Index Setup ─────────────────────────────────────────────────────
 const ensureIndexes = async () => {
@@ -51,24 +79,22 @@ const ensureIndexes = async () => {
 
 // ─── Console Logger Utility ───────────────────────────────────────────────────
 const chalk = {
-  reset:   '\x1b[0m',
-  bold:    '\x1b[1m',
-  dim:     '\x1b[2m',
-  red:     '\x1b[31m',
-  green:   '\x1b[32m',
-  yellow:  '\x1b[33m',
-  cyan:    '\x1b[36m',
-  white:   '\x1b[37m',
-  bgRed:   '\x1b[41m',
-  bgGreen: '\x1b[42m',
-  bgYellow:'\x1b[43m',
-  bgBlue:  '\x1b[44m',
+  reset:    '\x1b[0m',
+  bold:     '\x1b[1m',
+  dim:      '\x1b[2m',
+  red:      '\x1b[31m',
+  green:    '\x1b[32m',
+  yellow:   '\x1b[33m',
+  cyan:     '\x1b[36m',
+  white:    '\x1b[37m',
+  bgRed:    '\x1b[41m',
+  bgGreen:  '\x1b[42m',
+  bgYellow: '\x1b[43m',
+  bgBlue:   '\x1b[44m',
 };
 const c = (color, text) => `${chalk[color]}${text}${chalk.reset}`;
 
-/**
- * Log only changed player/team fields between two match snapshots
- */
+// ─── Log Diff ─────────────────────────────────────────────────────────────────
 function logMatchDiff(matchId, lastData, currentData) {
   const timestamp = new Date().toLocaleTimeString();
   const changes = [];
@@ -77,7 +103,6 @@ function logMatchDiff(matchId, lastData, currentData) {
     const lastTeam = lastData?.teams?.[ti];
     const tag = team.teamTag || team.teamName || `Slot${team.slot}`;
 
-    // Team-level: placePoints
     if (lastTeam && team.placePoints !== lastTeam.placePoints) {
       changes.push({
         team: tag, slot: team.slot, player: '—', field: 'placePoints',
@@ -114,20 +139,16 @@ function logMatchDiff(matchId, lastData, currentData) {
     return;
   }
 
-  // Header
   console.log(`\n${c('bgBlue', c('bold', ` LIVE UPDATE `))} ${c('cyan', matchId)} ${c('dim', `@ ${timestamp}`)}`);
   console.log(c('dim', '─'.repeat(80)));
 
-  // Column widths
   const W = { slot: 4, team: 8, player: 18, field: 22, old: 10, new: 10 };
   const row = (slot, team, player, field, oldV, newV) =>
     `  ${String(slot).padStart(W.slot)}  ${String(team).padEnd(W.team)}  ${String(player).padEnd(W.player)}  ${String(field).padEnd(W.field)}  ${String(oldV).padStart(W.old)}  →  ${String(newV).padEnd(W.new)}`;
 
-  // Header row
   console.log(c('dim', row('Slot', 'Team', 'Player', 'Field', 'Before', 'After')));
   console.log(c('dim', '─'.repeat(80)));
 
-  // Data rows with color coding
   changes.forEach(ch => {
     const isGood   = ['killNum', 'assists', 'knockouts', 'headShotNum', 'heal', 'rescueTimes'].includes(ch.field);
     const isBad    = ['bHasDied', 'liveState'].includes(ch.field) && ch.new > ch.old;
@@ -150,9 +171,7 @@ function logMatchDiff(matchId, lastData, currentData) {
   console.log(`  ${c('bold', String(changes.length))} change(s) detected\n`);
 }
 
-/**
- * Print a compact team/player table (first load)
- */
+// ─── Log Full Table ───────────────────────────────────────────────────────────
 function logFullMatchTable(matchData) {
   const timestamp = new Date().toLocaleTimeString();
   console.log(`\n${c('bgGreen', c('bold', ` MATCH SNAPSHOT `))} ${c('cyan', String(matchData.matchId))} ${c('dim', `@ ${timestamp}`)}`);
@@ -197,10 +216,9 @@ function logFullMatchTable(matchData) {
 const userPollState = new Map();
 const userKeyToDbId = new Map();
 const lastMatchDataByUserMatch = {};
-// Store hashes separately to avoid re-hashing lastData every cycle
 const lastHashByUserMatch = {};
 
-const MIN_INTERVAL        = 800;
+const MIN_INTERVAL        = 1000;
 const MAX_INTERVAL        = 10000;
 const INITIAL_INTERVAL    = 2000;
 const NO_CHANGE_THRESHOLD = 1;
@@ -210,7 +228,6 @@ function startLiveMatchUpdater() {
   const io = getSocket();
   console.log('Socket.IO instance connected:', !!io);
 
-  // Ensure indexes once DB is ready
   if (mongoose.connection.readyState === 1) {
     ensureIndexes();
   } else {
@@ -264,14 +281,14 @@ function startLiveMatchUpdater() {
     return {
       ...dbPlayer,
       ...apiPlayer,
-      _id:        dbPlayer._id,
-      uId:        dbPlayer.uId,
-      playerName: dbPlayer.playerName,
-      picUrl:     safePic(dbPlayer.picUrl)     || safePic(grpPlayer?.photo) || safePic(apiPlayer.picUrl)     || '',
-      showPicUrl: safePic(dbPlayer.showPicUrl) || safePic(grpPlayer?.photo) || safePic(apiPlayer.showPicUrl) || '',
+      _id:           dbPlayer._id,
+      uId:           dbPlayer.uId,
+      playerName:    dbPlayer.playerName,
+      picUrl:        safePic(dbPlayer.picUrl)     || safePic(grpPlayer?.photo) || safePic(apiPlayer.picUrl)     || '',
+      showPicUrl:    safePic(dbPlayer.showPicUrl) || safePic(grpPlayer?.photo) || safePic(apiPlayer.showPicUrl) || '',
       teamIdfromApi: apiPlayer.teamId,
-      location:   apiPlayer.location || { x: 0, y: 0, z: 0 },
-      bHasDied:   apiPlayer.liveState === 5 || dbPlayer.bHasDied
+      location:      apiPlayer.location || { x: 0, y: 0, z: 0 },
+      bHasDied:      apiPlayer.liveState === 5 || dbPlayer.bHasDied
     };
   };
 
@@ -305,7 +322,7 @@ function startLiveMatchUpdater() {
     } catch (err) {
       console.warn(`⚠️  Could not connect to PUBG API at ${PUBG_API_URL}:`, err.code);
       console.log('Continuing without API data...');
-      return matchData;
+      return matchData.toObject();
     }
 
     await updateTeamsWithApiPlayers(apiPlayers, matchId, userId);
@@ -321,7 +338,6 @@ function startLiveMatchUpdater() {
       const teamApiPlayers = apiPlayers.filter(p => Number(p.teamId) === Number(team.slot));
       const matchDataByUid = new Map((team.players || []).map(p => [normalizeId(p.uId), p]));
 
-      // Step 1: Merge API + DB + Group
       for (const apiPlayer of teamApiPlayers) {
         if (newTeamPlayers.length >= 4) break;
         const uid = normalizeId(apiPlayer.uId);
@@ -334,50 +350,50 @@ function startLiveMatchUpdater() {
         if (matchPlayer || grpPlayer) {
           finalPlayer = {
             ...apiPlayer,
-            _id:                  new mongoose.Types.ObjectId(),
-            uId:                  uid,
-            playerOpenId:         matchPlayer?.playerOpenId  || grpPlayer?.playerOpenId  || apiPlayer.playerOpenId || '',
-            playerName:           matchPlayer?.playerName?.trim() || grpPlayer?.playerName?.trim() || apiPlayer.playerName,
-            picUrl:               matchPlayer?.picUrl?.trim() || grpPlayer?.photo?.trim() || apiPlayer.picUrl || '',
-            showPicUrl:           '',
-            teamIdfromApi:        team.slot,
-            location:             apiPlayer.location || { x: 0, y: 0, z: 0 },
-            bHasDied:             apiPlayer.liveState === 5,
-            health:               apiPlayer.health               || 0,
-            healthMax:            apiPlayer.healthMax            || 100,
-            liveState:            apiPlayer.liveState            || 0,
-            killNum:              apiPlayer.killNum              || 0,
-            killNumBeforeDie:     apiPlayer.killNumBeforeDie     || 0,
-            damage:               apiPlayer.damage               || 0,
-            assists:              apiPlayer.assists              || 0,
-            knockouts:            apiPlayer.knockouts            || 0,
-            headShotNum:          apiPlayer.headShotNum          || 0,
-            survivalTime:         apiPlayer.survivalTime         || 0,
-            isFiring:             apiPlayer.isFiring             || false,
-            isOutsideBlueCircle:  apiPlayer.isOutsideBlueCircle || false,
-            inDamage:             apiPlayer.inDamage             || 0,
-            driveDistance:        apiPlayer.driveDistance        || 0,
-            marchDistance:        apiPlayer.marchDistance        || 0,
-            outsideBlueCircleTime:apiPlayer.outsideBlueCircleTime|| 0,
-            rescueTimes:          apiPlayer.rescueTimes          || 0,
-            gotAirDropNum:        apiPlayer.gotAirDropNum        || 0,
-            maxKillDistance:      apiPlayer.maxKillDistance      || 0,
-            killNumInVehicle:     apiPlayer.killNumInVehicle     || 0,
-            killNumByGrenade:     apiPlayer.killNumByGrenade     || 0,
-            AIKillNum:            apiPlayer.AIKillNum            || 0,
-            BossKillNum:          apiPlayer.BossKillNum          || 0,
-            useSmokeGrenadeNum:   apiPlayer.useSmokeGrenadeNum   || 0,
-            useFragGrenadeNum:    apiPlayer.useFragGrenadeNum    || 0,
-            useBurnGrenadeNum:    apiPlayer.useBurnGrenadeNum    || 0,
-            useFlashGrenadeNum:   apiPlayer.useFlashGrenadeNum   || 0,
-            PoisonTotalDamage:    apiPlayer.PoisonTotalDamage    || 0,
-            UseSelfRescueTime:    apiPlayer.UseSelfRescueTime    || 0,
-            UseEmergencyCallTime: apiPlayer.UseEmergencyCallTime || 0,
-            heal:                 apiPlayer.heal                 || 0,
-            teamId:               apiPlayer.teamId,
-            teamName:             apiPlayer.teamName             || '',
-            character:            apiPlayer.character            || 'None',
-            playerKey:            apiPlayer.playerKey            || 0,
+            _id:                   new mongoose.Types.ObjectId(),
+            uId:                   uid,
+            playerOpenId:          matchPlayer?.playerOpenId  || grpPlayer?.playerOpenId  || apiPlayer.playerOpenId || '',
+            playerName:            matchPlayer?.playerName?.trim() || grpPlayer?.playerName?.trim() || apiPlayer.playerName,
+            picUrl:                matchPlayer?.picUrl?.trim() || grpPlayer?.photo?.trim() || apiPlayer.picUrl || '',
+            showPicUrl:            '',
+            teamIdfromApi:         team.slot,
+            location:              apiPlayer.location || { x: 0, y: 0, z: 0 },
+            bHasDied:              apiPlayer.liveState === 5,
+            health:                apiPlayer.health               || 0,
+            healthMax:             apiPlayer.healthMax            || 100,
+            liveState:             apiPlayer.liveState            || 0,
+            killNum:               apiPlayer.killNum              || 0,
+            killNumBeforeDie:      apiPlayer.killNumBeforeDie     || 0,
+            damage:                apiPlayer.damage               || 0,
+            assists:               apiPlayer.assists              || 0,
+            knockouts:             apiPlayer.knockouts            || 0,
+            headShotNum:           apiPlayer.headShotNum          || 0,
+            survivalTime:          apiPlayer.survivalTime         || 0,
+            isFiring:              apiPlayer.isFiring             || false,
+            isOutsideBlueCircle:   apiPlayer.isOutsideBlueCircle || false,
+            inDamage:              apiPlayer.inDamage             || 0,
+            driveDistance:         apiPlayer.driveDistance        || 0,
+            marchDistance:         apiPlayer.marchDistance        || 0,
+            outsideBlueCircleTime: apiPlayer.outsideBlueCircleTime|| 0,
+            rescueTimes:           apiPlayer.rescueTimes          || 0,
+            gotAirDropNum:         apiPlayer.gotAirDropNum        || 0,
+            maxKillDistance:       apiPlayer.maxKillDistance      || 0,
+            killNumInVehicle:      apiPlayer.killNumInVehicle     || 0,
+            killNumByGrenade:      apiPlayer.killNumByGrenade     || 0,
+            AIKillNum:             apiPlayer.AIKillNum            || 0,
+            BossKillNum:           apiPlayer.BossKillNum          || 0,
+            useSmokeGrenadeNum:    apiPlayer.useSmokeGrenadeNum   || 0,
+            useFragGrenadeNum:     apiPlayer.useFragGrenadeNum    || 0,
+            useBurnGrenadeNum:     apiPlayer.useBurnGrenadeNum    || 0,
+            useFlashGrenadeNum:    apiPlayer.useFlashGrenadeNum   || 0,
+            PoisonTotalDamage:     apiPlayer.PoisonTotalDamage    || 0,
+            UseSelfRescueTime:     apiPlayer.UseSelfRescueTime    || 0,
+            UseEmergencyCallTime:  apiPlayer.UseEmergencyCallTime || 0,
+            heal:                  apiPlayer.heal                 || 0,
+            teamId:                apiPlayer.teamId,
+            teamName:              apiPlayer.teamName             || '',
+            character:             apiPlayer.character            || 'None',
+            playerKey:             apiPlayer.playerKey            || 0,
           };
         } else {
           finalPlayer = {
@@ -397,7 +413,7 @@ function startLiveMatchUpdater() {
         usedUIds.add(uid);
       }
 
-      // Step 2: Assign placePoints from rank
+      // Assign placePoints from rank
       const teamRank = newTeamPlayers.length
         ? Math.min(...newTeamPlayers.map(p => p.rank || 0))
         : 0;
@@ -419,9 +435,22 @@ function startLiveMatchUpdater() {
       team.players = newTeamPlayers;
     }
 
-    matchData.markModified('teams');
-    await matchData.save();
-    return matchData;
+    // ── Store in memory immediately (no await DB save here) ──────────────────
+    const updatedObject = matchData.toObject();
+    const cacheKey = `${String(userId)}:${String(matchId)}`;
+    liveMatchCache.set(cacheKey, updatedObject);
+
+    // ── Push to background save queue ────────────────────────────────────────
+    saveQueue.push({
+      matchId,
+      userId,
+      teams: updatedObject.teams,
+    });
+
+    // Kick off background saver (non-blocking)
+    processSaveQueue();
+
+    return updatedObject;
   };
 
   // ─── Per-User Poller ────────────────────────────────────────────────────────
@@ -468,15 +497,20 @@ function startLiveMatchUpdater() {
         const updatedMatchData = await updateMatchDataWithLiveStats(selected.matchId, selUserId);
         if (!updatedMatchData) continue;
 
-        const snapshotKey = `${String(userKey)}:${String(selected.matchId)}`;
-        const currentData = updatedMatchData.toObject();
-        const currentHash = quickHash(currentData);
-        const lastHash    = lastHashByUserMatch[snapshotKey];
-        const lastData    = lastMatchDataByUserMatch[snapshotKey];
+        // Read from memory cache (already stored by updateMatchDataWithLiveStats)
+        const cacheKey    = `${String(userKey)}:${String(selected.matchId)}`;
+        const memoryMatch = liveMatchCache.get(cacheKey) || updatedMatchData;
 
-        // Helper: emit socket events
+        const snapshotKey  = `${String(userKey)}:${String(selected.matchId)}`;
+        const currentData  = memoryMatch;
+        const currentHash  = quickHash(currentData);
+        const lastHash     = lastHashByUserMatch[snapshotKey];
+        const lastData     = lastMatchDataByUserMatch[snapshotKey];
+
+        // Helper: emit socket events immediately from memory
         const emitUpdates = async () => {
-          io.emit('liveMatchUpdate', updatedMatchData);
+          // Emit live match data straight from memory — no DB round-trip
+          io.emit('liveMatchUpdate', memoryMatch);
           try {
             const overallTeams = await computeOverallMatchDataForRound(
               selected.tournamentId, selected.roundId, selected.matchId, selUserId
@@ -495,7 +529,7 @@ function startLiveMatchUpdater() {
 
         if (!lastHash) {
           // First load — show full snapshot table
-          logFullMatchTable(updatedMatchData);
+          logFullMatchTable(memoryMatch);
           await emitUpdates();
           lastMatchDataByUserMatch[snapshotKey] = currentData;
           lastHashByUserMatch[snapshotKey]      = currentHash;
@@ -574,6 +608,13 @@ function startLiveMatchUpdater() {
       console.error('[discovery] Error:', e);
     }
   };
+
+  // ─── Background Save Interval (flush any leftover jobs) ──────────────────
+  setInterval(() => {
+    if (saveQueue.length > 0) {
+      processSaveQueue();
+    }
+  }, 2000);
 
   // Boot
   discoverAndStartPollingUsers();

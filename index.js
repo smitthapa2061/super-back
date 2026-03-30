@@ -623,9 +623,15 @@ app.get('/', (req, res) => {
   res.send('Hello World from Express!');
 });
 
+// --- IMPORT LIVE MATCH UPDATER --- 
+const { startLiveMatchUpdater } = require('./controller/Api_controllers/pubgApiMatchData.controller.js');
+
 // --- SOCKET.IO ---
 const server = http.createServer(app);
 const io = initializeSocket(server);
+
+// Start live match updater (depends on socket)
+startLiveMatchUpdater();
 
 // Wrap session middleware for socket.io
 const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
