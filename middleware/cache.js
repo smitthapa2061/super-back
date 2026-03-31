@@ -9,8 +9,8 @@ if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN
 
 // Create Redis client with new hosted creds
 const redisClient = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  url: process.env.UPSTASH_REDIS_REST_URL || 'https://enabled-mako-38693.upstash.io',
+  token: process.env.UPSTASH_REDIS_REST_TOKEN || 'AZclAAIncDIwYzAxYTkyMmRlNDU0YjU5OWZjNGU5ZWQ2MDMzZTVkYnAyMzg2OTM',
 });
 
 // Test connection on startup
