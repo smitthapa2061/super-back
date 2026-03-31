@@ -30,9 +30,9 @@ const config = {
   SESSION_SECRET: envVars.SESSION_SECRET || 'supersecretkey123',
   
 // Database
-  MONGODB_URI: envVars.MONGODB_URI || 'mongodb+srv://demon:P6whwJ8qsMfIZg2F@cluster0.ix4q7ng.mongodb.net/?appName=Cluster0',
-  UPSTASH_REDIS_REST_URL: envVars.UPSTASH_REDIS_REST_URL || 'https://mint-crappie-80073.upstash.io',
-  UPSTASH_REDIS_REST_TOKEN: envVars.UPSTASH_REDIS_REST_TOKEN || 'gQAAAAAAATjJAAIncDJkOWY0YTc1OTZlZmY0MmJmOGVkOGM4ZDM2NGQ4OWNlNHAyODAwNzM',
+  MONGODB_URI: envVars.MONGODB_URI || 'mongodb+srv://DEMON:1RpRCPfA2TIjcXXL@cluster0.znuinux.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
+  UPSTASH_REDIS_REST_URL: envVars.UPSTASH_REDIS_REST_URL || 'https://enabled-mako-38693.upstash.io',
+  UPSTASH_REDIS_REST_TOKEN: envVars.UPSTASH_REDIS_REST_TOKEN || 'AZclAAIncDIwYzAxYTkyMmRlNDU0YjU5OWZjNGU5ZWQ2MDMzZTVkYnAyMzg2OTM',
   
   // Logging
   LOG_LEVEL: envVars.LOG_LEVEL || 'info',
