@@ -228,6 +228,7 @@ function startLiveMatchUpdater() {
   const io = getSocket();
   console.log('Socket.IO instance connected:', !!io);
 
+  // Always safe guard indexes - only run if DB connected
   if (mongoose.connection.readyState === 1) {
     ensureIndexes();
   } else {
@@ -460,6 +461,11 @@ function startLiveMatchUpdater() {
       return false;
     }
 
+    if (mongoose.connection.readyState !== 1) {
+      console.log(`[POLL user ${userKey}] DB not ready, skipping`);
+      return false;
+    }
+
     let hadChanges = false;
     const dbUserId =
       userKeyToDbId.get(String(userKey)) ||
@@ -559,6 +565,10 @@ function startLiveMatchUpdater() {
   // ─── User Discovery ─────────────────────────────────────────────────────────
   const discoverAndStartPollingUsers = async () => {
     try {
+      if (mongoose.connection.readyState !== 1) {
+        console.log('[discovery] DB not ready, skipping');
+        return;
+      }
       const apiEnabledRounds = await Round.find({ apiEnable: true });
       if (!apiEnabledRounds.length) {
         console.log('[discovery] No API-enabled rounds found');

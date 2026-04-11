@@ -71,15 +71,13 @@ if (isProduction) {
 
 // --- CONNECT TO MONGODB ---
 mongoose.connect(config.MONGODB_URI, {
-    serverSelectionTimeoutMS: 15000,   // give Atlas more time (was 5000)
+    serverSelectionTimeoutMS: 15000,
     connectTimeoutMS: 20000,
     socketTimeoutMS: 60000,
+    bufferTimeoutMS: 30000,
     maxPoolSize: 10,
     family: 4,
-    // REMOVE: useNewUrlParser, useUnifiedTopology (deprecated in Mongoose 6+)
-    // REMOVE: bufferMaxEntries (Mongoose 5.x only, causes issues in 6+)
-    // REMOVE: bufferMaxEntries: 0  ← this is your silent killer
-    heartbeatFrequencyMS: 10000,       // check connection health every 10s
+    heartbeatFrequencyMS: 10000,
     retryWrites: true,
 })
   .then(() => console.log('✅ MongoDB connected'))
@@ -640,23 +638,34 @@ app.get('/api/public/tournaments/:tournamentId/rounds/:roundId/overall', async (
 });
 
 // API health check route
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    message: 'API is running', 
+    version: '1.0.0', 
+    status: 'ok',
+    dbConnected: mongoose.connection.readyState === 1,
+    redisConnected: false // Add redis check if needed
+  });
+});
+
 app.get('/api', (req, res) => {
-  res.json({ message: 'API is running', version: '1.0.0', status: 'ok' });
+  res.redirect('/api/health');
 });
 
 app.get('/', (req, res) => {
   res.send('Hello World from Express!');
 });
 
-// --- IMPORT LIVE MATCH UPDATER --- 
-const { startLiveMatchUpdater } = require('./controller/Api_controllers/pubgApiMatchData.controller.js');
-
 // --- SOCKET.IO ---
 const server = http.createServer(app);
 const io = initializeSocket(server);
 
-// Start live match updater (depends on socket)
-startLiveMatchUpdater();
+// --- DEFER STARTUP UNTIL DB READY ---
+mongoose.connection.once('open', () => {
+  console.log('🚀 Starting live match updater now that DB is ready');
+  const { startLiveMatchUpdater } = require('./controller/Api_controllers/pubgApiMatchData.controller.js');
+  startLiveMatchUpdater();
+});
 
 // Wrap session middleware for socket.io
 const wrap = middleware => (socket, next) => middleware(socket.request, {}, next);
@@ -680,8 +689,8 @@ io.on('connection', (socket) => {
 });
 
 // --- START SERVER ---
-server.listen(port, () => {
-  console.log(`🚀 Server running at http://localhost:${port}`);
- 
+server.listen(port, '0.0.0.0', () => {
+  console.log(`🚀 Server running at http://0.0.0.0:${port}`);
+  console.log(`📊 Health check: http://localhost:${port}/api/health`);
 });
 
