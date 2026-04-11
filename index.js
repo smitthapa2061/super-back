@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 require('dotenv').config({ path: './.env' });
 
-const dns = require("dns");
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
-
-
 
 
 // Load configuration
